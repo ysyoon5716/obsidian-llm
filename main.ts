@@ -60,28 +60,46 @@ export class PromptModal extends FuzzySuggestModal<string> {
 		prompt = prompt.replace('{title}', title);
 		console.log('prompt', prompt);
 
-		const client = new OpenAI({
-			apiKey: this.plugin.settings.apiKey,
-			dangerouslyAllowBrowser: true,
-		});
+		
 		
 
 		const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor!;
 		const cursor = editor.getCursor();
 		let from = {line: cursor.line, ch: cursor.ch};
 		console.log(cursor);
+		
+		let isLoading = true;
+		const loadingNotice = new Notice('Generating response...', 0);
 
-		const stream = await client.responses.create({
-			model: this.plugin.settings.modelName,
-			input: prompt,
-			stream: true,
+
+		const client = new OpenAI({
+			apiKey: this.plugin.settings.apiKey,
+			dangerouslyAllowBrowser: true,
 		});
+		
+		try {
+			const stream = await client.responses.create({
+				model: this.plugin.settings.modelName,
+				input: prompt,
+				stream: true,
+			});
 
-		for await (const event of stream) {
-			if (event.type === 'response.output_text.delta') {
-				editor.replaceRange(event.delta, from);
-				from.ch += event.delta.length;
-			}	
+			
+			for await (const event of stream) {
+				if (event.type === 'response.output_text.delta') {
+					if (isLoading) {
+						loadingNotice.hide();
+						isLoading = false;
+					}
+					editor.replaceRange(event.delta, from);
+					from.ch += event.delta.length;
+				}	
+			}
+		} catch (error) {
+			loadingNotice.hide();
+			isLoading = false;
+			new Notice(`Error: ${error.message}`);
+			console.error('LLM API Error:', error);
 		}
 	}
 }
