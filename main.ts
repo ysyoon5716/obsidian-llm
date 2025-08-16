@@ -17,10 +17,12 @@ const DEFAULT_SETTINGS: LLMSettings = {
 
 export class PromptModal extends FuzzySuggestModal<string> {
 	plugin: LLMPlugin;
-	
-	constructor(app: App, plugin: LLMPlugin) {
+	withFile: boolean;
+
+	constructor(app: App, plugin: LLMPlugin, withFile: boolean) {
 		super(app);
-		this.plugin = plugin;
+		this.plugin = plugin;;
+		this.withFile = withFile;
 	}
 
 	getItems(): string[] {
@@ -53,54 +55,53 @@ export class PromptModal extends FuzzySuggestModal<string> {
 		}
 		let prompt = await this.plugin.app.vault.read(promptFile);
 
-		const activeFile = this.app.workspace.getActiveFile();
-		const title = activeFile?.basename || '';
-		console.log('title', title);
-
+		const activeFile = this.app.workspace.getActiveFile()!;
+		const title = activeFile.basename!;
+		const cache = this.app.metadataCache.getFileCache(activeFile);
+		const frontmatter = cache?.frontmatter!;
+		
 		prompt = prompt.replace('{title}', title);
 		console.log('prompt', prompt);
-
 		
-		
-
 		const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor!;
 		const cursor = editor.getCursor();
 		let from = {line: cursor.line, ch: cursor.ch};
 		console.log(cursor);
 		
-		let isLoading = true;
 		const loadingNotice = new Notice('Generating response...', 0);
-
 
 		const client = new OpenAI({
 			apiKey: this.plugin.settings.apiKey,
 			dangerouslyAllowBrowser: true,
 		});
-		
-		try {
-			const stream = await client.responses.create({
+
+		let response;
+		if (this.withFile) {
+			response = await client.responses.create({
+				model: this.plugin.settings.modelName,
+				input: [
+					{
+						role: 'user',
+						content: [
+							
+							{type: 'input_file', file_url: frontmatter.url},
+							{type: 'input_text', text: prompt},
+						]
+					},
+				],
+			});
+			
+		} else {
+			response = await client.responses.create({
 				model: this.plugin.settings.modelName,
 				input: prompt,
-				stream: true,
 			});
-
-			
-			for await (const event of stream) {
-				if (event.type === 'response.output_text.delta') {
-					if (isLoading) {
-						loadingNotice.hide();
-						isLoading = false;
-					}
-					editor.replaceRange(event.delta, from);
-					from.ch += event.delta.length;
-				}	
-			}
-		} catch (error) {
-			loadingNotice.hide();
-			isLoading = false;
-			new Notice(`Error: ${error.message}`);
-			console.error('LLM API Error:', error);
 		}
+
+		console.log('response', response);
+		loadingNotice.hide();
+		editor.replaceRange(response.output_text, from);
+		
 	}
 }
 
@@ -118,10 +119,20 @@ export default class LLMPlugin extends Plugin {
 			name: 'Generate Text',
 			callback: () => {
 				console.log('generating text');
-				const modal = new PromptModal(this.app, this);
+				const modal = new PromptModal(this.app, this, false);
 				modal.open();
 			}
 		});
+
+		this.addCommand({
+			id: 'generate-text-with-file',
+			name: 'Generate Text with File',
+			callback: () => {
+				console.log('generating text with file');
+				const modal = new PromptModal(this.app, this, true);
+				modal.open();
+			}
+		})
 	}
 
 	async loadSettings() {
