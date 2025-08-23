@@ -1,7 +1,7 @@
 import { App, Editor, FuzzySuggestModal, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, Vault } from 'obsidian';
 import OpenAI from 'openai';
+import {GoogleGenAI} from '@google/genai';
 
-// Remember to rename these classes and interfaces!
 
 interface LLMSettings {
 	apiKey: string;
@@ -12,25 +12,20 @@ interface LLMSettings {
 const DEFAULT_SETTINGS: LLMSettings = {
 	apiKey: '',
 	promptFolder: '_prompt',
-	modelName: 'gpt-5-nano',
+	modelName: 'gemini-2.5-flash',
 }
+
 
 export class PromptModal extends FuzzySuggestModal<string> {
 	plugin: LLMPlugin;
-	withFile: boolean;
 
-	constructor(app: App, plugin: LLMPlugin, withFile: boolean) {
+	constructor(app: App, plugin: LLMPlugin) {
 		super(app);
 		this.plugin = plugin;;
-		this.withFile = withFile;
 	}
 
 	getItems(): string[] {
-		const promptFolder = this.plugin.app.vault.getFolderByPath(this.plugin.settings.promptFolder);
-		if (!promptFolder) {
-			new Notice('Prompt folder not found');
-			return [];
-		}
+		const promptFolder = this.plugin.app.vault.getFolderByPath(this.plugin.settings.promptFolder)!;
 		
 		const prompts: string[] = [];
 		Vault.recurseChildren(promptFolder, (file) => {
@@ -47,71 +42,48 @@ export class PromptModal extends FuzzySuggestModal<string> {
 	}
 
 	async onChooseItem(item: string, evt: MouseEvent | KeyboardEvent): Promise<void> {
-		console.log('chosen item', item);
-		const promptFile = this.plugin.app.vault.getFileByPath(`${this.plugin.settings.promptFolder}/${item}.md`);
-		if (!promptFile) {
-			new Notice('Prompt file not found');
-			return;
-		}
+		const promptFile = this.plugin.app.vault.getFileByPath(`${this.plugin.settings.promptFolder}/${item}.md`)!;
+		
 		let prompt = await this.plugin.app.vault.read(promptFile);
 
 		const activeFile = this.app.workspace.getActiveFile()!;
-		const title = activeFile.basename!;
-		const cache = this.app.metadataCache.getFileCache(activeFile);
-		const frontmatter = cache?.frontmatter!;
+		const title = activeFile.basename!;		
 		
 		prompt = prompt.replace('{title}', title);
-		console.log('prompt', prompt);
-		
-		const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor!;
+		console.log('prompt: ', prompt);
+
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!view) {
+			return
+		}
+
+		const editor = view.editor;
 		const cursor = editor.getCursor();
 		let from = {line: cursor.line, ch: cursor.ch};
 		console.log(cursor);
-		
+	
 		const loadingNotice = new Notice('Generating response...', 0);
 
-		const client = new OpenAI({
-			apiKey: this.plugin.settings.apiKey,
-			dangerouslyAllowBrowser: true,
-		});
+		const response = await this.plugin.client.models.generateContent({
+			model: this.plugin.settings.modelName,
+			contents: prompt,
+		  });
 
-		let response;
-		if (this.withFile) {
-			response = await client.responses.create({
-				model: this.plugin.settings.modelName,
-				input: [
-					{
-						role: 'user',
-						content: [
-							
-							{type: 'input_file', file_url: frontmatter.url},
-							{type: 'input_text', text: prompt},
-						]
-					},
-				],
-			});
-			
-		} else {
-			response = await client.responses.create({
-				model: this.plugin.settings.modelName,
-				input: prompt,
-			});
+		if (response.text) {
+			loadingNotice.hide();
+			console.log('response: ', response.text);
+			editor.replaceRange(response.text, from);
 		}
-
-		console.log('response', response);
-		loadingNotice.hide();
-		editor.replaceRange(response.output_text, from);
-		
 	}
 }
 
 export default class LLMPlugin extends Plugin {
+	client: GoogleGenAI
 	settings: LLMSettings;
 
 	async onload() {
-		console.log('loading LLM plugin');
 		await this.loadSettings();
-		console.log('loaded settings');
+	
 		this.addSettingTab(new LLMSettingTab(this.app, this));
 
 		this.addCommand({
@@ -119,7 +91,7 @@ export default class LLMPlugin extends Plugin {
 			name: 'Generate Text',
 			callback: () => {
 				console.log('generating text');
-				const modal = new PromptModal(this.app, this, false);
+				const modal = new PromptModal(this.app, this);
 				modal.open();
 			}
 		});
@@ -129,10 +101,13 @@ export default class LLMPlugin extends Plugin {
 			name: 'Generate Text with File',
 			callback: () => {
 				console.log('generating text with file');
-				const modal = new PromptModal(this.app, this, true);
+				const modal = new PromptModal(this.app, this);
 				modal.open();
 			}
 		})
+
+		this.client = new GoogleGenAI({apiKey: this.settings.apiKey});
+		console.log('client is loaded');
 	}
 
 	async loadSettings() {
